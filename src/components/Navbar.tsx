@@ -73,13 +73,14 @@ export const Navbar: React.FC = () => {
             </Link>
           </div>
 
-          <nav className="hidden md:flex gap-6 text-sm font-medium">
+          <nav className="flex gap-4 md:gap-6 text-xs sm:text-sm font-medium">
             <Link to="/" className={activeLink("/")}>
               Explore
             </Link>
             {currentUser && (
               <Link to="/studio" className={activeLink("/studio")}>
-                Creator Studio
+                <span className="hidden sm:inline">Creator Studio</span>
+                <span className="sm:hidden">Studio</span>
               </Link>
             )}
           </nav>
@@ -199,6 +200,10 @@ export const Navbar: React.FC = () => {
                   <User className="mr-2 h-4 w-4" />
                   <span>My Profile</span>
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate("/studio")}>
+                  <PenTool className="mr-2 h-4 w-4" />
+                  <span>Creator Studio</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate("/feed")}>
                   <BookOpen className="mr-2 h-4 w-4" />
                   <span>My Feed</span>
@@ -264,8 +269,13 @@ export const Navbar: React.FC = () => {
                       >
                         My Profile
                       </Link>
-
-
+                      <Link
+                        to="/studio"
+                        className="text-lg font-medium py-1.5 border-b"
+                        onClick={() => setMobileOpen(false)}
+                      >
+                        Creator Studio
+                      </Link>
                     </>
                   )}
                 </nav>
