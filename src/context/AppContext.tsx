@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { mockDb, User, Blog, Comment, Notification, Bookmark, Follow, Category, Tag, Report } from "@/utils/mockDb";
 import { toast } from "sonner";
+import { supabase, isSupabaseConfigured } from "@/lib/supabaseClient";
 
 // Initialize mock DB immediately to populate localStorage before state initialization
 mockDb.init();
@@ -79,6 +80,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
+  // Load initial blogs and comments from Supabase if configured
+  useEffect(() => {
+    const loadData = async () => {
+      if (!isSupabaseConfigured()) return;
+      try {
+        const { data: blogsData, error: blogsError } = await supabase
+          .from("blogs")
+          .select("*")
+          .order("createdDate", { ascending: false });
+
+        if (blogsError) throw blogsError;
+        if (blogsData) {
+          setBlogs(blogsData as Blog[]);
+        }
+
+        const { data: commentsData, error: commentsError } = await supabase
+          .from("comments")
+          .select("*")
+          .order("createdDate", { ascending: true });
+
+        if (commentsError) throw commentsError;
+        if (commentsData) {
+          setComments(commentsData as Comment[]);
+        }
+      } catch (error) {
+        console.error("Failed to load initial data from Supabase:", error);
+      }
+    };
+    loadData();
+  }, []);
+
   // Sync state changes with mockDb
   useEffect(() => {
     mockDb.set("users", users);
@@ -130,13 +162,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               setNotifications((prev) => [...newNotifs, ...prev]);
             }
 
-            toast.success(`Automatically published scheduled story: "${b.title}"`);
-            return {
+            const updatedBlog = {
               ...b,
-              status: "published",
+              status: "published" as const,
               publishedDate: new Date().toISOString(),
               scheduledDate: null,
             };
+
+            if (isSupabaseConfigured()) {
+              supabase
+                .from("blogs")
+                .update(updatedBlog)
+                .eq("id", b.id)
+                .then(({ error }) => {
+                  if (error) console.error("Error auto-publishing blog to Supabase:", error);
+                });
+            }
+
+            toast.success(`Automatically published scheduled story: "${b.title}"`);
+            return updatedBlog;
           }
           return b;
         })
@@ -385,6 +429,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toast.error("Please sign in to like blogs.");
       return;
     }
+    let updatedBlog: Blog | null = null;
     setBlogs((prevBlogs) =>
       prevBlogs.map((b) => {
         if (b.id === blogId) {
@@ -407,11 +452,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setNotifications((prevNotif) => [newNotification, ...prevNotif]);
           }
 
-          return { ...b, likes: newLikes };
+          const updated = { ...b, likes: newLikes };
+          updatedBlog = updated;
+          return updated;
         }
         return b;
       })
     );
+
+    if (isSupabaseConfigured() && updatedBlog) {
+      supabase
+        .from("blogs")
+        .update({ likes: (updatedBlog as Blog).likes })
+        .eq("id", blogId)
+        .then(({ error }) => {
+          if (error) console.error("Error updating blog likes in Supabase:", error);
+        });
+    }
   };
 
   const toggleBookmark = (blogId: string) => {
@@ -454,6 +511,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setBlogs((prev) => [newBlog, ...prev]);
 
+    if (isSupabaseConfigured()) {
+      supabase
+        .from("blogs")
+        .insert(newBlog)
+        .then(({ error }) => {
+          if (error) {
+            console.error("Error saving blog to Supabase:", error);
+            toast.error("Failed to save blog post to database.");
+          }
+        });
+    }
+
     // Send notifications to followers
     const followers = follows.filter((f) => f.followingId === currentUser.id).map((f) => f.followerId);
     if (followers.length > 0 && newBlog.status === "published") {
@@ -474,6 +543,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateBlog = (blogId: string, updatedFields: Partial<Blog>) => {
+    let updatedBlog: Blog | null = null;
     setBlogs((prev) =>
       prev.map((b) => {
         if (b.id === blogId) {
@@ -486,11 +556,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (updatedFields.content) {
             updated.readingTime = Math.max(1, Math.ceil(updatedFields.content.replace(/<[^>]*>/g, "").split(/\s+/).length / 200));
           }
+          updatedBlog = updated;
           return updated;
         }
         return b;
       })
     );
+
+    if (isSupabaseConfigured() && updatedBlog) {
+      supabase
+        .from("blogs")
+        .update(updatedBlog)
+        .eq("id", blogId)
+        .then(({ error }) => {
+          if (error) {
+            console.error("Error updating blog in Supabase:", error);
+            toast.error("Failed to update blog post in database.");
+          }
+        });
+    }
+
     toast.success("Blog post updated successfully.");
   };
 
@@ -498,6 +583,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setBlogs((prev) => prev.filter((b) => b.id !== blogId));
     setBookmarks((prev) => prev.filter((bookmark) => bookmark.blogId !== blogId));
     setComments((prev) => prev.filter((comment) => comment.blogId !== blogId));
+
+    if (isSupabaseConfigured()) {
+      supabase
+        .from("blogs")
+        .delete()
+        .eq("id", blogId)
+        .then(({ error }) => {
+          if (error) {
+            console.error("Error deleting blog from Supabase:", error);
+            toast.error("Failed to delete blog post from database.");
+          }
+        });
+      
+      supabase
+        .from("comments")
+        .delete()
+        .eq("blogId", blogId)
+        .then(({ error }) => {
+          if (error) console.error("Error deleting blog comments from Supabase:", error);
+        });
+    }
+
     toast.success("Blog post deleted successfully.");
   };
 
@@ -600,6 +707,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setComments((prev) => [...prev, newComment]);
 
+    if (isSupabaseConfigured()) {
+      supabase
+        .from("comments")
+        .insert(newComment)
+        .then(({ error }) => {
+          if (error) {
+            console.error("Error saving comment to Supabase:", error);
+            toast.error("Failed to save comment to database.");
+          }
+        });
+    }
+
     // Send notification to blog owner
     const targetBlog = blogs.find((b) => b.id === blogId);
     if (targetBlog && targetBlog.authorId !== currentUser.id) {
@@ -623,6 +742,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toast.error("Please sign in to like comments.");
       return;
     }
+    let updatedComment: Comment | null = null;
     setComments((prev) =>
       prev.map((c) => {
         if (c.id === commentId) {
@@ -630,24 +750,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const newLikes = isLiked
             ? c.likes.filter((id) => id !== currentUser.id)
             : [...c.likes, currentUser.id];
-          return { ...c, likes: newLikes };
+          const updated = { ...c, likes: newLikes };
+          updatedComment = updated;
+          return updated;
         }
         return c;
       })
     );
+
+    if (isSupabaseConfigured() && updatedComment) {
+      supabase
+        .from("comments")
+        .update({ likes: (updatedComment as Comment).likes })
+        .eq("id", commentId)
+        .then(({ error }) => {
+          if (error) console.error("Error updating comment likes in Supabase:", error);
+        });
+    }
   };
 
   const editComment = (commentId: string, content: string) => {
     setComments((prev) =>
       prev.map((c) => (c.id === commentId ? { ...c, content } : c))
     );
+
+    if (isSupabaseConfigured()) {
+      supabase
+        .from("comments")
+        .update({ content })
+        .eq("id", commentId)
+        .then(({ error }) => {
+          if (error) console.error("Error updating comment in Supabase:", error);
+        });
+    }
+
     toast.success("Comment updated.");
   };
 
   const deleteComment = (commentId: string) => {
+    let idsToDelete = [commentId];
     setComments((prev) => {
       // Find all IDs to delete (the comment itself + all its nested replies)
-      const idsToDelete = [commentId];
       prev.forEach((c) => {
         if (c.parentId === commentId) {
           idsToDelete.push(c.id);
@@ -655,6 +798,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       return prev.filter((c) => !idsToDelete.includes(c.id));
     });
+
+    if (isSupabaseConfigured()) {
+      supabase
+        .from("comments")
+        .delete()
+        .in("id", idsToDelete)
+        .then(({ error }) => {
+          if (error) console.error("Error deleting comment(s) from Supabase:", error);
+        });
+    }
+
     toast.success("Comment deleted.");
   };
 
